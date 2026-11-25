@@ -3,7 +3,10 @@ const SUPABASE_URL = 'https://zjmgfrgeeopqxcxvtljm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_U9LZ7mNy4v5I8w_IWYaTcQ_p89aK_WF';
 const ADMIN_EMAIL = 'medelcabillion@gmail.com'; // the email of the admin user you create in Supabase Auth
 // ================================================================
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// The login is kept only while this tab is open (sessionStorage): closing the tab or browser, or opening the site again, asks for the password.
+// An older saved login (from before this change) is wiped here.
+try { Object.keys(localStorage).filter(k => k.startsWith('sb-')).forEach(k => localStorage.removeItem(k)); } catch (x) {}
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { storage: window.sessionStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let exporting = false, members = [], view = 'home', q = '', sort = 'az', sel = null, form = null, confirmDel = false, mode = 'login', authed = false;
