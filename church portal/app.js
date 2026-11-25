@@ -336,7 +336,11 @@ document.addEventListener('click', async e => {
   if (id === 'sendreset') { const { error } = await sb.auth.resetPasswordForEmail(ADMIN_EMAIL, { redirectTo: location.href.split('#')[0] }); msg(error ? error.message : 'Reset link sent. Check the admin email.', !error); }
   if (id === 'setnew') { const p = $('#np').value; if (p.length < 6) return msg('Password must be at least 6 characters.');
     const { error } = await sb.auth.updateUser({ password: p }); if (error) return msg(error.message); mode = 'login'; authed = true; await load(); render(); }
-  if (id === 'logout') { farewell(); authed = false; mode = 'login'; members = []; view = 'home'; history.replaceState(null, '', location.pathname); render(); sb.auth.signOut(); }
+  if (id === 'logout') { farewell(); authed = false; mode = 'login'; members = []; view = 'home'; history.replaceState(null, '', location.pathname); render();
+    // finish signing out and wipe the saved login, so refreshing the page does not sign the admin in again
+    try { await sb.auth.signOut({ scope: 'local' }); } catch (x) {}
+    try { Object.keys(localStorage).filter(k => k.startsWith('sb-')).forEach(k => localStorage.removeItem(k)); } catch (x) {}
+    try { Object.keys(sessionStorage).filter(k => k.startsWith('sb-')).forEach(k => sessionStorage.removeItem(k)); } catch (x) {} }
   if (id === 'chg') { const n = $('#cp1').value;
     if (n.length < 6) return msg('New password must be at least 6 characters.');
     if (n !== $('#cp2').value) return msg('New passwords do not match.');
