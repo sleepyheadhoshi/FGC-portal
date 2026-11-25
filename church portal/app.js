@@ -27,7 +27,7 @@ const recs = { dedication: [], baptism: [] }, rq = { dedication: '', baptism: ''
 let rsel = null, rform = null, rconfirm = false, recErr = '';
 async function loadRecs() {
   recErr = '';
-  for (const k in REC) { const { data, error } = await sb.from(REC[k].table).select('*'); if (error) recErr = error.message + ' (run supabase-records.sql in Supabase first)'; else recs[k] = data; }
+  for (const k in REC) { const { data, error } = await fetchAll(REC[k].table, ['id', ...REC[k].fields.map(f => f[0])].join(',')); if (error) recErr = error.message + ' (run supabase-records.sql in Supabase first)'; else recs[k] = data; }
   if (authed && !form && !rform && !certM) render();
 }
 sb.channel('recs-live').on('postgres_changes', { event: '*', schema: 'public', table: 'baby_dedications' }, loadRecs)
@@ -51,11 +51,13 @@ function recSheet(k) {
   if (rform) return `<h2>${rform.isNew ? 'Add' : 'Edit'} ${c.label}</h2>` + c.fields.map(([key, label, type]) => type === 'gender'
     ? `<label>${label}</label><select id="r_${key}"><option>Female</option><option>Male</option></select>`
     : `<label>${label}</label><input id="r_${key}" type="${type}" value="${esc(rform[key])}">`).join('')
+    + `<label>Birth certificate (photo)</label><div id="bcp">${bcHtml(rform)}</div><input type="file" id="birthcert" accept="image/*">`
     + `<p id="err" style="color:#e11d48;font-size:13px"></p><div class="row"><button class="btn ghost" id="rcancel">Cancel</button><button class="btn" id="rsave">Save</button></div>`;
   const r = recs[k].find(x => x.id === rsel); if (!r) { rsel = null; return ''; }
   return `<div class="c"><div class="av lg">${esc(ini(String(r[c.nameKey] || '')))}</div><h2 style="margin:0">${esc(r[c.nameKey])}</h2><small style="color:var(--mut)">${esc(r.id)}</small></div><div style="height:8px"></div>`
     + c.fields.slice(1).map(([key, label, type]) => `<div class="kv"><span>${label}</span><b>${esc(type === 'date' ? fmt(r[key]) : (r[key] || '—'))}</b></div>`).join('')
-    + `<button class="btn" id="rcert" style="width:100%;margin-top:14px">Certificate of ${k === 'baptism' ? 'Baptism' : 'Dedication'}</button><div class="row" style="margin-top:14px"><button class="btn ghost" id="rclose">Close</button><button class="btn alt" id="redit">Edit</button><button class="btn del" id="rdel">${rconfirm ? 'Tap to confirm' : 'Remove'}</button></div>`;
+    + (r.birth_cert ? `<div class="kv"><span>Birth certificate</span><b><button class="btn ghost" id="bcview" type="button" style="padding:6px 12px">View</button></b></div>` : '')
+    + `<div class="row" style="margin-top:14px"><button class="btn ghost" id="rclose">Close</button><button class="btn alt" id="redit">Edit</button><button class="btn del" id="rdel">${rconfirm ? 'Tap to confirm' : 'Remove'}</button></div>`;
 }
 function wordDoc(title, head, rows, file) {
   const td = v => `<td style="border:1px solid #999;padding:4px">${esc(v ?? '')}</td>`;
@@ -74,8 +76,25 @@ function exportRecs(k) {
 }
 
 // ---------- data (Supabase) ----------
+// Supabase sends at most 1000 rows per request, so load page by page: no limit on records.
+// The big birth-certificate pictures are NOT loaded here (they load only when a record is opened).
+const MEMBER_COLS = 'id,name,birthday,gender,phone,address,joined,status,photo';
+async function fetchAll(table, cols) {
+  const rows = [], size = 200;
+  for (let from = 0; ; from += size) {
+    const { data, error } = await sb.from(table).select(cols).order('id').range(from, from + size - 1);
+    if (error) return { data: null, error };
+    rows.push(...data); if (data.length < size) break;
+  }
+  return { data: rows, error: null };
+}
+async function loadBC(table, obj) {
+  if (!obj || 'birth_cert' in obj) return;
+  const { data, error } = await sb.from(table).select('birth_cert').eq('id', obj.id).maybeSingle();
+  if (!error && data) obj.birth_cert = data.birth_cert || '';
+}
 async function load() {
-  const { data, error } = await sb.from('members').select('*');
+  const { data, error } = await fetchAll('members', MEMBER_COLS);
   if (!error) { members = data; if (authed && !form && !rform && !certM) render(); }
 }
 sb.channel('members-live').on('postgres_changes', {event:'*', schema:'public', table:'members'}, load).subscribe();
@@ -143,6 +162,7 @@ const msg = (t, ok) => {
 // ---------- main render ----------
 function render() {
   document.body.classList.toggle('show-wm', !!authed && view === 'home' && !pubToken);
+  document.body.classList.toggle('has-nav', !!authed && !pubToken);
   if (pubToken) return renderPublicCert();
   if (!authed) return renderAuth();
   $('#sub').innerHTML = `Welcome, Admin · ${members.length} members · <span class="sync"><span class="cloud">☁️</span><i class="pulse"></i>Connected &amp; synced</span>`;
@@ -156,7 +176,7 @@ function render() {
     settings: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'
   };
   $('#nav').innerHTML = [['home','Home'],['members','Membership'],['dedication','Dedication'],['baptism','Baptism'],['profile','Profile'],['settings','Settings']]
-    .map(([k,l]) => `<button data-v="${k}" class="${view===k?'on':''}"><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICON[k]}</svg></span>${l}</button>`).join('');
+    .map(([k,l]) => `<button data-v="${k}" title="${l}" class="${view===k?'on':''}"><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICON[k]}</svg></span><em class="nl">${l}</em></button>`).join('');
   let h = '';
   if (view === 'home') {
     const a = members.filter(m => m.status === 'Active').length;
@@ -197,12 +217,12 @@ function renderSheet() {
     c = `<div class="c">${av(m, 'lg')}<h2 style="margin:0">${esc(m.name)}</h2><span class="tag ${m.status}" style="margin:6px 0 10px;display:inline-block">${m.status}</span></div>
     ${[['Member ID', m.id], ['Birthday', fmt(m.birthday) + ' (' + age(m.birthday) + ' yrs)'], ['Gender', m.gender], ['Contact', m.phone || '—'], ['Address', m.address || '—'], ['Date joined', fmt(m.joined)]]
       .map(r => `<div class="kv"><span>${r[0]}</span><b>${esc(r[1])}</b></div>`).join('')}
-    ${m.birth_cert ? `<div class="kv"><span>Birth certificate</span><b><button class="btn ghost" id="bcview" type="button" style="padding:6px 12px">📄 View</button></b></div>` : ''}
+    ${m.birth_cert ? `<div class="kv"><span>Birth certificate</span><b><button class="btn ghost" id="bcview" type="button" style="padding:6px 12px">View</button></b></div>` : ''}
     ${SHOW_DOCS ? `<div class="row" style="margin-top:14px"><button class="btn" id="cert">Certificate</button><button class="btn" id="cov">Covenant</button></div>` : ''}<div class="row" style="margin-top:14px"><button class="btn ghost" id="close">Close</button><button class="btn alt" id="edit">Edit</button><button class="btn del" id="del">${confirmDel ? 'Tap to confirm' : 'Remove'}</button></div>`; }
   if (!c) { if (old) { const g = old.cloneNode(true); g.removeAttribute('id'); g.classList.add('closing'); document.body.appendChild(g); setTimeout(() => g.remove(), 220); } return; }
   const d = document.createElement('div'); d.className = 'sheet' + (old ? ' still' : ''); d.id = 'sheet'; d.innerHTML = '<div>' + c + '</div>'; document.body.appendChild(d);
   if (form) { $('#f_gender').value = form.gender; $('#f_status').value = form.status; }
-  if (certM) drawCert($('#certc'), { ...certM }, certKind);
+  if (certM) drawCert($('#certc'), { name: certM.name, id: certM.id, joined: certM.joined }, certKind);
   if (rform && REC[view]) REC[view].fields.forEach(([key, , type]) => { if (type === 'gender') $('#r_' + key).value = rform[key] || 'Female'; });
 }
 
@@ -226,7 +246,7 @@ body{font-family:Calibri,Arial,sans-serif}h1{color:#087E9B}table{border-collapse
 // Both are drawn from the same member data (name + date joined) and share one share-link token:
 //   certificate link: ?cert=TOKEN        covenant link: ?cert=TOKEN&doc=cov
 let certM = null, certKind = 'cert';
-const DOCS = { ded: { title: 'Certificate of Dedication', file: 'Dedication-Certificate' }, bapt: { title: 'Certificate of Baptism', file: 'Baptism-Certificate' }, cert: { title: 'Membership Certificate', file: 'Membership-Certificate' }, cov: { title: 'Membership Covenant', file: 'Membership-Covenant' } };
+const DOCS = { cert: { title: 'Membership Certificate', file: 'Membership-Certificate' }, cov: { title: 'Membership Covenant', file: 'Membership-Covenant' } };
 const pubToken = new URLSearchParams(location.search).get('cert');
 const pubKind = new URLSearchParams(location.search).get('doc') === 'cov' ? 'cov' : 'cert';
 let pubCert = pubToken ? 'loading' : null;
@@ -234,12 +254,21 @@ if (pubToken) sb.rpc('get_certificate', { p_token: pubToken }).then(({ data }) =
   const r = data && data[0]; pubCert = r ? { name: r.out_name, id: r.out_member_id, joined: r.out_joined } : null; render(); });
 const drawCert = (cv, d, kind) => {
   const fail = e => { if (cv) cv.insertAdjacentHTML('afterend', '<p style="color:#e11d48;font-size:13px">Could not draw: ' + esc(e.message) + '</p>'); };
-  // docs.js is big, so it loads in the background: wait for it (up to 20 s) instead of failing right away
-  return new Promise(res => { const t0 = Date.now(); (function w() { if (window.FGCDocs || Date.now() - t0 > 20000) res(); else setTimeout(w, 100); })(); })
-    .then(() => { if (!window.FGCDocs) throw new Error('docs.js was not loaded (check that docs.js is next to index.html)'); return FGCDocs.draw(cv, kind || 'cert', d); })
+  // docs.js is big, so it loads in the background: wait a few seconds, then try loading it again ourselves
+  return new Promise(res => { const t0 = Date.now(); (function w() { if (window.FGCDocs || Date.now() - t0 > 5000) res(); else setTimeout(w, 100); })(); })
+    .then(async () => {
+      if (!window.FGCDocs) await new Promise(res => { const s = document.createElement('script'); s.src = 'docs.js?v=' + Date.now(); s.onload = s.onerror = () => res(); document.head.appendChild(s); });
+      if (!window.FGCDocs) {
+        let m; try { const r = await fetch('docs.js', { cache: 'no-store' });
+          m = r.ok ? 'docs.js was found (' + Math.round((await r.text()).length / 1024) + ' KB) but could not run. Open the browser console (F12) to see the error.' : 'docs.js was not found on the website (error ' + r.status + '). Upload it in the same folder as index.html.';
+        } catch (x) { m = 'docs.js could not be downloaded (' + x.message + ').'; }
+        throw new Error(m);
+      }
+      return FGCDocs.draw(cv, kind || 'cert', d);
+    })
     .catch(fail);
 };
-const curCert = () => certM ? { ...certM } : pubCert;
+const curCert = () => certM ? { name: certM.name, id: certM.id, joined: certM.joined } : pubCert;
 const curKind = () => certM ? certKind : pubKind;
 function downloadCert() { const d = curCert(); $('#certc').toBlob(b => { const u = URL.createObjectURL(b), a = document.createElement('a');
   a.href = u; a.download = DOCS[curKind()].file + '-' + d.name.replace(/\s+/g, '-') + '.png'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 1000); }); }
@@ -248,7 +277,7 @@ function printCert() { const w = window.open('', '_blank'); if (!w) return;
   w.document.close(); setTimeout(() => { w.focus(); w.print(); }, 500); }
 const certSheet = () => `<h2>${DOCS[certKind].title}</h2><canvas id="certc" style="width:100%;border-radius:10px;border:1px solid var(--line);background:#fff"></canvas>
   <div class="row" style="margin-top:12px"><button class="btn" id="certdl">Download</button><button class="btn alt" id="certpr">Print</button></div>
-  ${certKind === 'bapt' || certKind === 'ded' ? '' : '<button class="btn alt" id="certsh" style="width:100%;margin-top:8px">Create share link</button>'}
+  <button class="btn alt" id="certsh" style="width:100%;margin-top:8px">Create share link</button>
   <div id="certmsg" style="font-size:13px;color:var(--mut);margin:8px 0"></div><button class="btn ghost" id="certx" style="width:100%">Back</button>`;
 function renderPublicCert() {
   $('#nav').classList.add('hide'); $('#sub').textContent = DOCS[pubKind].title;
@@ -260,7 +289,6 @@ function renderPublicCert() {
 document.addEventListener('click', async e => {
   const t = e.target, id = t.id;
   if (id === 'cert' || id === 'cov') { certM = members.find(x => x.id === sel); certKind = id; renderSheet(); }
-  if (id === 'rcert') { const k = view, c = REC[k], r = recs[k] && recs[k].find(x => x.id === rsel); if (r) { certM = { name: r[c.nameKey], id: r.id, joined: r[c.dateKey], birthday: r.birthday, minister: r.minister }; certKind = k === 'baptism' ? 'bapt' : 'ded'; renderSheet(); } }
   if (id === 'certx') { certM = null; renderSheet(); }
   if (id === 'certdl') downloadCert();
   if (id === 'certpr') printCert();
@@ -295,7 +323,7 @@ function go(v) {
 document.addEventListener('click', async e => {
   const t = e.target, id = t.id;
   const nv = t.closest('[data-v]'); if (nv) { go(nv.dataset.v); return; }
-  const cd = t.closest('.m[data-id]'); if (cd) { sel = cd.dataset.id; confirmDel = false; renderSheet(); return; }
+  const cd = t.closest('.m[data-id]'); if (cd) { const mid = sel = cd.dataset.id; confirmDel = false; renderSheet(); const mm = members.find(x => x.id === mid); loadBC('members', mm).then(() => { if (sel === mid && !form && !certM) renderSheet(); }); return; }
   if (id === 'sheet' || id === 'close' || id === 'rclose') { sel = form = rsel = rform = certM = null; rconfirm = false; confirmDel = false; renderSheet(); }
   if (id === 'login') {
     if ($('#lu').value.trim() !== 'Admin') return msg('Incorrect username or password.');
@@ -318,7 +346,7 @@ document.addEventListener('click', async e => {
     if (error) return msg(error.message);
     ['cp0', 'cp1', 'cp2'].forEach(i => $('#' + i).value = ''); msg('Password updated.', true); }
   if (id === 'add') form = { isNew: true, id: nextId(), name: '', birthday: '', gender: 'Female', phone: '', address: '', joined: new Date().toISOString().slice(0, 10), status: 'Active', photo: '' }, renderSheet();
-  if (id === 'edit') { form = { ...members.find(x => x.id === sel) }; sel = null; renderSheet(); }
+  if (id === 'edit') { const mm = members.find(x => x.id === sel); await loadBC('members', mm); form = { ...mm }; sel = null; renderSheet(); }
   if (id === 'cancel') { form = null; renderSheet(); }
   if (id === 'del') { if (!confirmDel) { confirmDel = true; t.textContent = 'Tap to confirm'; return; } await removeMember(sel); sel = null; confirmDel = false; await load(); render(); toast('Member removed'); }
   if (id === 'saveb') { const g = i => $('#f_' + i).value.trim(), er = $('#err');
@@ -339,13 +367,13 @@ document.addEventListener('change', e => { const t = e.target;
   if (t.id === 'birthcert' && t.files[0]) { const r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => {
     const c = document.createElement('canvas'), k = Math.min(1, 900 / Math.max(im.width, im.height)); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
     const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height);
-    form.birth_cert = c.toDataURL('image/jpeg', .65); $('#bcp').innerHTML = bcHtml(form); };
+    const f = form || rform; f.birth_cert = c.toDataURL('image/jpeg', .65); $('#bcp').innerHTML = bcHtml(f); };
     im.onerror = () => { $('#err').textContent = 'That file is not a picture. Please choose a photo (JPG or PNG).'; }; im.src = r.result; }; r.readAsDataURL(t.files[0]); } });
 
 // ---------- birth certificate view / remove ----------
 document.addEventListener('click', e => { const t = e.target;
-  if (t.id === 'bcdel' && form) { form.birth_cert = ''; $('#bcp').innerHTML = bcHtml(form); }
-  if (t.id === 'bcview') { const m = members.find(x => x.id === sel); if (m && m.birth_cert) { const d = document.createElement('div'); d.className = 'sheet bcview'; d.style.alignItems = 'center';
+  if (t.id === 'bcdel' && (form || rform)) { const f = form || rform; f.birth_cert = ''; $('#bcp').innerHTML = bcHtml(f); }
+  if (t.id === 'bcview') { const m = (REC[view] && rsel) ? recs[view].find(x => x.id === rsel) : members.find(x => x.id === sel); if (m && m.birth_cert) { const d = document.createElement('div'); d.className = 'sheet bcview'; d.style.alignItems = 'center';
     d.innerHTML = `<div style="border-radius:16px;max-width:92%;width:auto;padding:10px"><img src="${m.birth_cert}" alt="Birth certificate" style="width:100%;max-height:75vh;object-fit:contain;border-radius:10px;display:block;background:#fff"><button class="btn" id="bcclose" style="width:100%;margin-top:10px">Close</button></div>`; document.body.appendChild(d); } }
   if (t.id === 'bcclose') document.querySelector('.bcview')?.remove();
 });
@@ -353,10 +381,10 @@ document.addEventListener('click', e => { const t = e.target;
 // ---------- records events ----------
 document.addEventListener('click', async e => {
   const t = e.target, id = t.id, k = view, c = REC[k];
-  const cd = t.closest('.m[data-rid]'); if (cd) { rsel = cd.dataset.rid; rconfirm = false; renderSheet(); return; }
+  const cd = t.closest('.m[data-rid]'); if (cd) { const rid = rsel = cd.dataset.rid; rconfirm = false; renderSheet(); const rr = recs[k] && recs[k].find(x => x.id === rid); if (c && rr) loadBC(c.table, rr).then(() => { if (rsel === rid && !rform && !certM) renderSheet(); }); return; }
   if (!c) return;
   if (id === 'radd') { rform = { isNew: true, id: rNextId(k), [c.dateKey]: new Date().toISOString().slice(0, 10) }; renderSheet(); }
-  if (id === 'redit') { rform = { ...recs[k].find(r => r.id === rsel) }; rsel = null; renderSheet(); }
+  if (id === 'redit') { const rr = recs[k].find(r => r.id === rsel); await loadBC(c.table, rr); rform = { ...rr }; rsel = null; renderSheet(); }
   if (id === 'rcancel') { rform = null; renderSheet(); }
   if (id === 'rdel') { if (!rconfirm) { rconfirm = true; t.textContent = 'Tap to confirm'; return; }
     await sb.from(c.table).delete().eq('id', rsel); rsel = null; rconfirm = false; await loadRecs(); render(); toast('Record removed'); }
@@ -364,7 +392,8 @@ document.addEventListener('click', async e => {
     c.fields.forEach(([key, , type]) => { const v = $('#r_' + key).value.trim(); r[key] = type === 'date' ? (v || null) : v; });
     if (!r[c.nameKey]) return er.textContent = 'Please enter a name.';
     if (!r[c.dateKey]) return er.textContent = 'Please enter the date.';
-    const { error } = await sb.from(c.table).upsert(r); if (error) return er.textContent = error.message;
+    if (!r.birth_cert && !('birth_cert' in (recs[k].find(x => x.id === r.id) || {}))) delete r.birth_cert;
+    const { error } = await sb.from(c.table).upsert(r); if (error) return er.textContent = /birth_cert/.test(error.message) ? 'The birth certificate column is missing in Supabase. Run supabase-birth-certificate.sql first.' : error.message;
     rform = null; await loadRecs(); render(); toast('Record saved'); }
   if (id === 'rword' && !exporting) { exporting = true; exportRecs(k); setTimeout(() => exporting = false, 1500); }
 });
